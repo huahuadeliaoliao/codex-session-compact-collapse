@@ -148,6 +148,115 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
 }
 
 #[tokio::test]
+async fn live_app_server_turn_started_sets_feedback_turn_id() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: Some(0),
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    chat.open_feedback_note(
+        crate::app_event::FeedbackCategory::Bug,
+        /*include_logs*/ false,
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SubmitFeedback {
+            category: crate::app_event::FeedbackCategory::Bug,
+            reason: None,
+            turn_id: Some(turn_id),
+            include_logs: false,
+        }) if turn_id == "turn-1"
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_warning_notification_renders_message() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::Warning(WarningNotification {
+            thread_id: None,
+            message: "Warning: Exceeded skills context budget of 2%. All skill descriptions were removed and 2 additional skills were not included in the model-visible skills list.".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one warning history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        normalized.contains("Warning: Exceeded skills context budget of 2%."),
+        "expected warning notification message, got {rendered}"
+    );
+    assert!(
+        normalized.contains(
+            "All skill descriptions were removed and 2 additional skills were not included in the model-visible skills list."
+        ),
+        "expected warning guidance, got {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_guardian_warning_notification_renders_message() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::GuardianWarning(GuardianWarningNotification {
+            thread_id: "thread-1".to_string(),
+            message: "Automatic approval review denied the requested action.".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one warning history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Automatic approval review denied the requested action."),
+        "expected guardian warning notification message, got {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_config_warning_prefixes_summary() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ConfigWarning(ConfigWarningNotification {
+            summary: "Invalid configuration; using defaults.".to_string(),
+            details: None,
+            path: None,
+            range: None,
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one warning history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Invalid configuration; using defaults."),
+        "expected config warning summary, got {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn live_app_server_file_change_item_started_preserves_changes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -191,7 +300,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
             item: AppServerThreadItem::CommandExecution {
                 id: "cmd-1".to_string(),
                 command: command.clone(),
-                cwd: PathBuf::from("/tmp"),
+                cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::InProgress,
@@ -212,7 +321,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
             item: AppServerThreadItem::CommandExecution {
                 id: "cmd-1".to_string(),
                 command,
-                cwd: PathBuf::from("/tmp"),
+                cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::Completed,
@@ -567,6 +676,71 @@ async fn live_app_server_server_overloaded_error_renders_warning() {
     assert_eq!(cells.len(), 1);
     assert_eq!(lines_to_single_string(&cells[0]), "⚠ server overloaded\n");
     assert!(!chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
+async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: Some(0),
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            error: AppServerTurnError {
+                message: "server fallback message".to_string(),
+                codex_error_info: Some(CodexErrorInfo::CyberPolicy.into()),
+                additional_details: None,
+            },
+            will_retry: false,
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("This chat was flagged for possible cybersecurity risk"));
+    assert!(rendered.contains("Trusted Access for Cyber"));
+    assert!(!rendered.contains("server fallback message"));
+    assert!(!chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
+async fn live_app_server_model_verification_renders_warning() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ModelVerification(ModelVerificationNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            verifications: vec![AppServerModelVerification::TrustedAccessForCyber],
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("flagged for potentially high-risk cyber activity"));
+    assert!(rendered.contains("slower while additional verification"));
+    assert!(rendered.contains("https://chatgpt.com/cyber"));
 }
 
 #[tokio::test]

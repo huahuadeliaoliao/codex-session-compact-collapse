@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_login::CodexAuth;
+use codex_protocol::config_types::CompactStrategy;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -17,6 +18,7 @@ use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
 use codex_protocol::protocol::RealtimeEvent;
+use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::user_input::UserInput;
@@ -33,8 +35,10 @@ use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use tokio::time::Duration;
 use wiremock::ResponseTemplate;
 
 fn approx_token_count(text: &str) -> i64 {
@@ -54,6 +58,7 @@ fn estimate_compact_payload_tokens(request: &responses::ResponsesRequest) -> i64
 
 const PRETURN_CONTEXT_DIFF_CWD: &str = "/tmp/PRETURN_CONTEXT_DIFF_CWD";
 const DUMMY_FUNCTION_NAME: &str = "test_tool";
+const REMOTE_COMPACT_TURN_COMPLETE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn summary_with_prefix(summary: &str) -> String {
     format!("{SUMMARY_PREFIX}\n{summary}")
@@ -116,6 +121,7 @@ async fn start_remote_realtime_server() -> responses::WebSocketTestServer {
 async fn start_realtime_conversation(codex: &codex_core::CodexThread) -> Result<()> {
     codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            output_modality: RealtimeOutputModality::Audio,
             prompt: Some(Some("backend prompt".to_string())),
             session_id: None,
             transport: None,
@@ -195,6 +201,15 @@ fn assert_request_contains_realtime_end(request: &responses::ResponsesRequest) {
     );
 }
 
+async fn wait_for_turn_complete(codex: &codex_core::CodexThread) {
+    wait_for_event_with_timeout(
+        codex,
+        |ev| matches!(ev, EventMsg::TurnComplete(_)),
+        REMOTE_COMPACT_TURN_COMPLETE_TIMEOUT,
+    )
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -232,6 +247,7 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello remote compact".into(),
                 text_elements: Vec::new(),
@@ -240,13 +256,14 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
             responsesapi_client_metadata: None,
         })
         .await?;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_turn_complete(&codex).await;
 
     codex.submit(Op::Compact).await?;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_turn_complete(&codex).await;
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "after compact".into(),
                 text_elements: Vec::new(),
@@ -255,7 +272,7 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
             responsesapi_client_metadata: None,
         })
         .await?;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_turn_complete(&codex).await;
 
     let compact_request = compact_mock.single_request();
     assert_eq!(compact_request.path(), "/v1/responses/compact");
@@ -343,6 +360,593 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_strategy_manual_compact_bypasses_remote_compact() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.compact_strategy = CompactStrategy::Session;
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message(
+                    "m2",
+                    "Keep the session route ahead of remote compact and migrate the benchmark harness next.",
+                ),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "AFTER_COMPACT_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    let compact_mock = responses::mount_compact_json_once(
+        harness.server(),
+        serde_json::json!({ "output": compacted_summary_only_output("UNUSED_REMOTE_COMPACT") }),
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello remote compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "after compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    assert!(
+        compact_mock.requests().is_empty(),
+        "session compact should bypass /v1/responses/compact even on remote-capable providers"
+    );
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(
+        3,
+        response_requests.len(),
+        "expected three /v1/responses turns"
+    );
+    let compact_request = &response_requests[1];
+    let compact_body = compact_request.body_json().to_string();
+    assert!(
+        compact_body.contains("session-level compaction"),
+        "expected session compact prompt instructions in the compact turn request"
+    );
+
+    let follow_up_request = &response_requests[2];
+    let follow_up_body = follow_up_request.body_json().to_string();
+    assert!(
+        follow_up_body.contains("session_compact_state"),
+        "expected follow-up request to include normalized session compact state"
+    );
+    assert!(
+        follow_up_body.contains("Keep the session route ahead of remote compact"),
+        "expected normalized session state to preserve the compacted handoff"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_strategy_manual_compact_sends_full_precompact_history_until_context_limit()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.compact_strategy = CompactStrategy::Session;
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "TURN1_ASSISTANT_MARKER"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "TURN2_ASSISTANT_MARKER"),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "TURN3_ASSISTANT_MARKER"),
+                responses::ev_completed("resp-3"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message(
+                    "m4",
+                    "Compact the full thread, then retain a bounded structured frontier.",
+                ),
+                responses::ev_completed("resp-4"),
+            ]),
+        ],
+    )
+    .await;
+
+    let compact_mock = responses::mount_compact_json_once(
+        harness.server(),
+        serde_json::json!({ "output": compacted_summary_only_output("UNUSED_REMOTE_COMPACT") }),
+    )
+    .await;
+
+    for text in [
+        "TURN1_USER_MARKER",
+        "TURN2_USER_MARKER",
+        "TURN3_USER_MARKER",
+    ] {
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: text.into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+            })
+            .await?;
+        wait_for_turn_complete(&codex).await;
+    }
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    assert!(
+        compact_mock.requests().is_empty(),
+        "session compact should bypass /v1/responses/compact even on remote-capable providers"
+    );
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(
+        4,
+        response_requests.len(),
+        "expected three normal turns and one session compact turn"
+    );
+
+    let compact_request = &response_requests[3];
+    let compact_body = compact_request.body_json().to_string();
+    assert!(
+        compact_body.contains("TURN1_USER_MARKER"),
+        "expected session compact to send early thread context to the compact model before retention-time trimming"
+    );
+    assert!(
+        compact_body.contains("TURN2_USER_MARKER"),
+        "expected session compact to include middle thread context in the compact turn"
+    );
+    assert!(
+        compact_body.contains("TURN3_USER_MARKER"),
+        "expected session compact to include the latest user context in the compact turn"
+    );
+    assert!(
+        compact_body.contains("TURN1_ASSISTANT_MARKER"),
+        "expected session compact to include early assistant context when it still fits"
+    );
+    assert!(
+        compact_body.contains("TURN2_ASSISTANT_MARKER"),
+        "expected session compact to include middle assistant context when it still fits"
+    );
+    assert!(
+        compact_body.contains("TURN3_ASSISTANT_MARKER"),
+        "expected session compact to include the latest assistant context in the compact turn"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_strategy_manual_compact_follow_up_keeps_structured_recent_frontier() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.compact_strategy = CompactStrategy::Session;
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "TURN1_ASSISTANT_FRONTIER"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "TURN2_ASSISTANT_FRONTIER"),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "TURN3_ASSISTANT_FRONTIER"),
+                responses::ev_completed("resp-3"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message(
+                    "m4",
+                    "Normalize the durable state and keep only the most recent structured frontier.",
+                ),
+                responses::ev_completed("resp-4"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m5", "AFTER_COMPACT_REPLY"),
+                responses::ev_completed("resp-5"),
+            ]),
+        ],
+    )
+    .await;
+
+    let compact_mock = responses::mount_compact_json_once(
+        harness.server(),
+        serde_json::json!({ "output": compacted_summary_only_output("UNUSED_REMOTE_COMPACT") }),
+    )
+    .await;
+
+    for text in [
+        "TURN1_USER_FRONTIER",
+        "TURN2_USER_FRONTIER",
+        "TURN3_USER_FRONTIER",
+    ] {
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: text.into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+            })
+            .await?;
+        wait_for_turn_complete(&codex).await;
+    }
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "after compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    assert!(
+        compact_mock.requests().is_empty(),
+        "session compact should bypass /v1/responses/compact even on remote-capable providers"
+    );
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(
+        5,
+        response_requests.len(),
+        "expected three normal turns, one compact turn, and one follow-up turn"
+    );
+
+    let follow_up_request = &response_requests[4];
+    let follow_up_body = follow_up_request.body_json().to_string();
+    assert!(
+        follow_up_body.contains("session_compact_state"),
+        "expected follow-up request to include the normalized durable session state"
+    );
+    assert!(
+        follow_up_body.contains("TURN2_USER_FRONTIER"),
+        "expected follow-up request to retain the second-most-recent user turn in the structured frontier"
+    );
+    assert!(
+        follow_up_body.contains("TURN2_ASSISTANT_FRONTIER"),
+        "expected follow-up request to retain assistant context from the second-most-recent frontier turn"
+    );
+    assert!(
+        follow_up_body.contains("TURN3_USER_FRONTIER"),
+        "expected follow-up request to retain the most recent user turn in the structured frontier"
+    );
+    assert!(
+        follow_up_body.contains("TURN3_ASSISTANT_FRONTIER"),
+        "expected follow-up request to retain assistant context from the most recent frontier turn"
+    );
+    assert!(
+        !follow_up_body.contains("TURN1_ASSISTANT_FRONTIER"),
+        "expected follow-up request to drop assistant context outside the bounded structured frontier"
+    );
+    assert!(
+        !follow_up_body.contains("TURN1_USER_FRONTIER"),
+        "expected follow-up request to drop user context outside the bounded structured frontier"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_strategy_manual_compact_follow_up_expands_to_recent_active_work_surface()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.compact_strategy = CompactStrategy::Session;
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "TURN1_ASSISTANT_PASSIVE"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "TURN2_ASSISTANT_ACTIVE retry cargo test"),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "TURN3_ASSISTANT_FRONTIER"),
+                responses::ev_completed("resp-3"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m4", "TURN4_ASSISTANT_FRONTIER"),
+                responses::ev_completed("resp-4"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message(
+                    "m5",
+                    "Normalize the durable state and keep the recent active work surface recoverable.",
+                ),
+                responses::ev_completed("resp-5"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m6", "AFTER_COMPACT_REPLY"),
+                responses::ev_completed("resp-6"),
+            ]),
+        ],
+    )
+    .await;
+
+    for text in [
+        "TURN1_USER_PASSIVE",
+        "TURN2_USER_ACTIVE todo fix compact_frontier.rs before retry",
+        "TURN3_USER_FRONTIER",
+        "TURN4_USER_FRONTIER",
+    ] {
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: text.into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+            })
+            .await?;
+        wait_for_turn_complete(&codex).await;
+    }
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "after compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(
+        6,
+        response_requests.len(),
+        "expected four normal turns, one compact turn, and one follow-up turn"
+    );
+
+    let follow_up_request = &response_requests[5];
+    let follow_up_body = follow_up_request.body_json().to_string();
+    assert!(
+        follow_up_body.contains("TURN2_USER_ACTIVE todo fix compact_frontier.rs before retry"),
+        "expected follow-up request to keep the recent active user turn even though it sits outside the default two-turn frontier"
+    );
+    assert!(
+        follow_up_body.contains("TURN2_ASSISTANT_ACTIVE retry cargo test"),
+        "expected follow-up request to keep assistant context from the expanded active work surface"
+    );
+    assert!(
+        follow_up_body.contains("TURN3_USER_FRONTIER"),
+        "expected follow-up request to retain the base frontier turn immediately before compaction"
+    );
+    assert!(
+        follow_up_body.contains("TURN4_USER_FRONTIER"),
+        "expected follow-up request to retain the most recent pre-compaction turn"
+    );
+    assert!(
+        !follow_up_body.contains("TURN1_USER_PASSIVE"),
+        "expected follow-up request to keep expansion bounded and drop older passive turns"
+    );
+    assert!(
+        !follow_up_body.contains("TURN1_ASSISTANT_PASSIVE"),
+        "expected follow-up request to keep expansion bounded and drop older passive assistant context"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_compact_persists_image_sidecar_without_reinjecting_old_images() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.compact_strategy = CompactStrategy::Session;
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    let rollout_path = harness
+        .test()
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+    let image_url =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
+            .to_string();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "IMAGE_BASELINE_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message(
+                    "m2",
+                    "Keep the session state crisp and preserve image references only in compact metadata.",
+                ),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "FOLLOW_UP_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![
+                UserInput::Image {
+                    image_url: image_url.clone(),
+                },
+                UserInput::Text {
+                    text: "reference this image later".into(),
+                    text_elements: Vec::new(),
+                },
+            ],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_event(&codex, |event| {
+        matches!(event, EventMsg::ContextCompacted(_))
+    })
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "follow up without image".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex.submit(Op::Shutdown).await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
+
+    let requests = responses_mock.requests();
+    assert_eq!(
+        3,
+        requests.len(),
+        "expected initial turn, compact turn, and follow-up turn"
+    );
+    assert!(
+        requests[2].message_input_image_urls("user").is_empty(),
+        "expected compact-owned image sidecar metadata to stay out of follow-up prompts"
+    );
+
+    let rollout_text = fs::read_to_string(&rollout_path)?;
+    let persisted_sidecar = rollout_text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_str::<RolloutLine>(line).ok())
+        .find_map(|entry| match entry.item {
+            RolloutItem::Compacted(compacted) => compacted.image_sidecar,
+            _ => None,
+        })
+        .expect("expected compacted rollout item with image sidecar");
+
+    assert_eq!(1, persisted_sidecar.recent_user_images.len());
+    assert_eq!(image_url, persisted_sidecar.recent_user_images[0].image_url);
+    assert_eq!(
+        Some("reference this image later"),
+        persisted_sidecar.recent_user_images[0].user_text.as_deref()
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_compact_runs_automatically() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -378,6 +982,7 @@ async fn remote_compact_runs_automatically() -> Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello remote compact".into(),
                 text_elements: Vec::new(),
@@ -405,6 +1010,100 @@ async fn remote_compact_runs_automatically() -> Result<()> {
     let follow_up_request = responses_mock.single_request();
     let follow_up_body = follow_up_request.body_json().to_string();
     assert!(follow_up_body.contains("REMOTE_COMPACTED_SUMMARY"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_strategy_auto_compact_bypasses_remote_compact() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.compact_strategy = CompactStrategy::Session;
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_shell_command_call("m1", "echo 'hi'"),
+                responses::ev_completed_with_tokens("resp-1", /*total_tokens*/ 100000000),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message(
+                    "m2",
+                    "Keep the durable session state normalized and move benchmark migration next.",
+                ),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "AFTER_COMPACT_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    let compact_mock = responses::mount_compact_json_once(
+        harness.server(),
+        serde_json::json!({ "output": compacted_summary_only_output("UNUSED_REMOTE_COMPACT") }),
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello remote compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+
+    let compacted = wait_for_event_match(&codex, |event| match event {
+        EventMsg::ContextCompacted(_) => Some(true),
+        _ => None,
+    })
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    assert!(compacted);
+
+    assert!(
+        compact_mock.requests().is_empty(),
+        "session auto compact should bypass /v1/responses/compact even on remote-capable providers"
+    );
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(
+        3,
+        response_requests.len(),
+        "expected initial turn, session compact turn, and resumed continuation"
+    );
+    let compact_request = &response_requests[1];
+    let compact_body = compact_request.body_json().to_string();
+    assert!(
+        compact_body.contains("session-level compaction"),
+        "expected session compact prompt instructions in the auto compact request"
+    );
+
+    let resumed_request = &response_requests[2];
+    let resumed_body = resumed_request.body_json().to_string();
+    assert!(
+        resumed_body.contains("session_compact_state"),
+        "expected resumed request to include normalized session compact state"
+    );
+    assert!(
+        resumed_body.contains("Keep the durable session state normalized"),
+        "expected resumed request to preserve the compacted handoff"
+    );
 
     Ok(())
 }
@@ -453,6 +1152,7 @@ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> R
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: first_user_message.into(),
                 text_elements: Vec::new(),
@@ -465,6 +1165,7 @@ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> R
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: second_user_message.into(),
                 text_elements: Vec::new(),
@@ -581,6 +1282,7 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: first_user_message.into(),
                 text_elements: Vec::new(),
@@ -593,6 +1295,7 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: second_user_message.into(),
                 text_elements: Vec::new(),
@@ -611,6 +1314,7 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "turn that triggers auto compact".into(),
                 text_elements: Vec::new(),
@@ -709,6 +1413,7 @@ async fn auto_remote_compact_failure_stops_agent_loop() -> Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "turn that exceeds token threshold".into(),
                 text_elements: Vec::new(),
@@ -721,6 +1426,7 @@ async fn auto_remote_compact_failure_stops_agent_loop() -> Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "turn that triggers auto compact".into(),
                 text_elements: Vec::new(),
@@ -777,7 +1483,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
     let override_retained_call_id = "override-retained-call";
     let override_trailing_call_id = "override-trailing-call";
     let retained_command = "printf retained-shell-output";
-    let trailing_command = "printf trailing-shell-output";
+    let trailing_command = "printf '%020000d' 0";
 
     let baseline_harness = TestCodexHarness::with_builder(
         test_codex()
@@ -813,6 +1519,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
 
     baseline_codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: first_user_message.into(),
                 text_elements: Vec::new(),
@@ -828,6 +1535,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
 
     baseline_codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: second_user_message.into(),
                 text_elements: Vec::new(),
@@ -866,9 +1574,12 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
     let baseline_input_tokens = estimate_compact_input_tokens(&baseline_compact_request);
     let baseline_payload_tokens = estimate_compact_payload_tokens(&baseline_compact_request);
 
-    let override_base_instructions =
-        format!("REMOTE_BASE_INSTRUCTIONS_OVERRIDE {}", "x".repeat(120_000));
-    let override_context_window = baseline_payload_tokens.saturating_add(1_000);
+    let override_base_instructions = format!(
+        "{}\nREMOTE_BASE_INSTRUCTIONS_OVERRIDE {}",
+        baseline_compact_request.instructions_text(),
+        "x".repeat(4_000)
+    );
+    let override_context_window = baseline_payload_tokens.saturating_add(500);
     let pretrim_override_estimate =
         baseline_input_tokens.saturating_add(approx_token_count(&override_base_instructions));
     assert!(
@@ -914,6 +1625,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
 
     override_codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: first_user_message.into(),
                 text_elements: Vec::new(),
@@ -929,6 +1641,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
 
     override_codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: second_user_message.into(),
                 text_elements: Vec::new(),
@@ -998,6 +1711,7 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "manual remote compact".into(),
                 text_elements: Vec::new(),
@@ -1077,6 +1791,7 @@ async fn remote_manual_compact_failure_emits_task_error_event() -> Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "manual remote compact".into(),
                 text_elements: Vec::new(),
@@ -1160,6 +1875,7 @@ async fn remote_compact_persists_replacement_history_in_rollout() -> Result<()> 
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "needs compaction".into(),
                 text_elements: Vec::new(),
@@ -1302,6 +2018,7 @@ async fn remote_compact_and_resume_refresh_stale_developer_instructions() -> Res
     initial
         .codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "start remote compact flow".into(),
                 text_elements: Vec::new(),
@@ -1318,6 +2035,7 @@ async fn remote_compact_and_resume_refresh_stale_developer_instructions() -> Res
     initial
         .codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "after compact in same session".into(),
                 text_elements: Vec::new(),
@@ -1341,6 +2059,7 @@ async fn remote_compact_and_resume_refresh_stale_developer_instructions() -> Res
     resumed
         .codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "after resume".into(),
                 text_elements: Vec::new(),
@@ -1436,6 +2155,7 @@ async fn remote_compact_refreshes_stale_developer_instructions_without_resume() 
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "start remote compact flow".into(),
                 text_elements: Vec::new(),
@@ -1451,6 +2171,7 @@ async fn remote_compact_refreshes_stale_developer_instructions_without_resume() 
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "after compact in same session".into(),
                 text_elements: Vec::new(),
@@ -1521,6 +2242,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_sta
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -1533,6 +2255,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_sta
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_TWO".to_string(),
                 text_elements: Vec::new(),
@@ -1598,6 +2321,7 @@ async fn remote_request_uses_custom_experimental_realtime_start_instructions() -
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -1657,6 +2381,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_end
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -1671,6 +2396,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_end
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_TWO".to_string(),
                 text_elements: Vec::new(),
@@ -1744,6 +2470,7 @@ async fn snapshot_request_shape_remote_manual_compact_restates_realtime_start() 
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -1759,6 +2486,7 @@ async fn snapshot_request_shape_remote_manual_compact_restates_realtime_start() 
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_TWO".to_string(),
                 text_elements: Vec::new(),
@@ -1840,6 +2568,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_does_not_restate_real
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "SETUP_USER".to_string(),
                 text_elements: Vec::new(),
@@ -1854,6 +2583,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_does_not_restate_real
 
     test.codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_TWO".to_string(),
                 text_elements: Vec::new(),
@@ -1943,6 +2673,7 @@ async fn snapshot_request_shape_remote_compact_resume_restates_realtime_end() ->
     initial
         .codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -1971,6 +2702,7 @@ async fn snapshot_request_shape_remote_compact_resume_restates_realtime_end() ->
     resumed
         .codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_TWO".to_string(),
                 text_elements: Vec::new(),
@@ -2053,6 +2785,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_including_incoming_us
                     approval_policy: None,
                     approvals_reviewer: None,
                     sandbox_policy: None,
+                    permission_profile: None,
                     windows_sandbox_level: None,
                     model: None,
                     effort: None,
@@ -2065,6 +2798,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_including_incoming_us
         }
         codex
             .submit(Op::UserInput {
+                environments: None,
                 items: vec![UserInput::Text {
                     text: user.to_string(),
                     text_elements: Vec::new(),
@@ -2113,8 +2847,8 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_strips_incoming_model
 -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let previous_model = "gpt-5.1-codex-max";
-    let next_model = "gpt-5.2-codex";
+    let previous_model = "gpt-5.4";
+    let next_model = "gpt-5.3-codex";
     let harness = TestCodexHarness::with_builder(
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
@@ -2150,6 +2884,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_strips_incoming_model
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "BEFORE_SWITCH_USER".to_string(),
                 text_elements: Vec::new(),
@@ -2166,6 +2901,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_strips_incoming_model
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
+            permission_profile: None,
             windows_sandbox_level: None,
             model: Some(next_model.to_string()),
             effort: None,
@@ -2177,6 +2913,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_strips_incoming_model
         .await?;
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "AFTER_SWITCH_USER".to_string(),
                 text_elements: Vec::new(),
@@ -2294,6 +3031,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_context_window_exceed
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -2306,6 +3044,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_context_window_exceed
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_TWO".to_string(),
                 text_elements: Vec::new(),
@@ -2389,6 +3128,7 @@ async fn snapshot_request_shape_remote_mid_turn_continuation_compaction() -> Res
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -2465,6 +3205,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_summary_only_reinject
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -2549,6 +3290,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_multi_summary_reinjec
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),
@@ -2564,6 +3306,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_multi_summary_reinjec
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_TWO".to_string(),
                 text_elements: Vec::new(),
@@ -2644,6 +3387,7 @@ async fn snapshot_request_shape_remote_manual_compact_without_previous_user_mess
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "USER_ONE".to_string(),
                 text_elements: Vec::new(),

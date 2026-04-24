@@ -1,75 +1,76 @@
-# Codex Compact Collapse
+# Codex Session Compact Collapse
 
-Codex Compact Collapse is a Codex-derived experimental source release focused on
-conversation compaction for long-running coding sessions.
+This repository is a Codex-derived experimental source release for session-level
+compact-collapse. It is based on OpenAI Codex `rust-v0.124.0` and adds an
+opt-in compaction route designed for long-running coding sessions.
 
-It adds an opt-in `collapse` compaction mode on top of the upstream summary
-path, with the goal of preserving recent working-state structure more faithfully
-while keeping default behavior unchanged unless the new mode is explicitly
-enabled.
+The goal is durable continuity after repeated `/compact` or auto-compaction
+events: instead of producing a one-off handoff summary, the session route asks
+the model to maintain a stable `<session_compact_state>` block with active
+memory, inactive changes, current handoff, and evidence pointers.
 
 > [!WARNING]
-> This repository is an independent derivative of the open-source OpenAI Codex
-> project. It is not an official OpenAI release. This first public release is
-> intentionally source-only: benchmark corpora, copied session artifacts, and
-> private lab outputs are omitted pending sanitization.
+> This is an independent derivative of the open-source OpenAI Codex project.
+> It is not an official OpenAI release.
 
 ## What Changed
 
-- Added `compact_mode = "summary" | "collapse"` as an additive configuration
-  switch.
-- Added `compact_preserve_turns` for controlling how much recent context is
-  preserved in collapse mode.
-- Set the current collapse-mode default preserve window to `5` turns.
-- Kept the default upstream behavior unchanged unless `compact_mode = "collapse"`
-  is explicitly configured.
-- Preserved the existing replacement-history compatibility path rather than
-  introducing a new public session format.
+- Added `compact_strategy = "session"` as an explicit opt-in route.
+- Routed manual `/compact` and auto compact through the same selector.
+- Ensured the session strategy wins before provider-based remote compaction.
+- Added a dedicated session-compact prompt contract under
+  `codex-rs/core/templates/session_compact/prompt.md`.
+- Preserved continuity through `replacement_history` while keeping a bounded
+  recent structured frontier.
+- Added sidecar metadata for recent user images without replaying old images
+  into later prompts.
+- Added docs and benchmark harness material for repeated compact recovery
+  checks.
 
-## Quickstart
+Default Codex behavior remains unchanged unless the session strategy is
+explicitly enabled.
 
-Build from source using the existing Codex build instructions:
+## Enable It
+
+Build from source using the existing Codex build flow:
 
 - [Installing and building](./docs/install.md)
 - [Configuration docs](./docs/config.md)
 - [Contributing](./docs/contributing.md)
 
-After building, run the local binary as usual.
-
-To enable the experimental compaction path, add the following to
-`~/.codex/config.toml`:
+Then add this to `~/.codex/config.toml`:
 
 ```toml
-compact_mode = "collapse"
-compact_preserve_turns = 5
+compact_strategy = "session"
 ```
 
-If these keys are absent, Codex keeps the default summary compaction behavior.
+With this setting, both manual `/compact` and automatic compaction use the
+session route. Without it, Codex keeps the upstream default compact behavior.
 
-## Repository Scope
+## Design Notes
 
-This public snapshot includes:
+- [Active contract](./docs/session-compact-active-contract.md)
+- [Design harness](./docs/session-compact-design-harness.md)
+- [RCR benchmark notes](./docs/session-compact-rcr-benchmark.md)
+- [Staged orchestration notes](./docs/session-compact-staged-orchestration.md)
 
-- the modified Codex source tree
-- config and protocol changes needed to expose the new compaction mode
-- tests and general build documentation needed to inspect or build the change
+The benchmark runner is available at:
 
-This public snapshot intentionally does not include:
+```shell
+python3 scripts/session_compact_rcr_benchmark.py --help
+```
 
-- benchmark case corpora
-- copied session data
-- isolated lab manifests
-- benchmark result artifacts
-- private execution journals
+The included benchmark manifest is intentionally small and source-reviewable.
+Private copied-session artifacts and local result journals are not included.
 
 ## Upstream Lineage
 
 This repository is derived from the open-source
 [`openai/codex`](https://github.com/openai/codex) codebase and remains under the
-same Apache-2.0 licensing terms for the upstream material.
+same Apache-2.0 licensing terms for upstream material.
 
-See [DERIVATION.md](./DERIVATION.md) for a short summary of the source lineage
-and the public-release scope of this snapshot.
+See [DERIVATION.md](./DERIVATION.md) for source lineage and public-release
+scope.
 
 ## License
 

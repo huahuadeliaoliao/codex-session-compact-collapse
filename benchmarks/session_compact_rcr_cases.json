@@ -1,0 +1,349 @@
+{
+  "benchmark": "session_compact_rcr",
+  "version": 2,
+  "source_thread_profiles": {
+    "019d4e04-eaa2-7311-a0e2-ad430b478151": {
+      "classification": "acceptance_oracle",
+      "notes": "Structurally normal copied source thread used for repeated-compaction acceptance."
+    },
+    "019d5980-4f20-7861-9083-e3527d20a3d2": {
+      "classification": "shape_harness_outlier",
+      "notes": "Keep for diagnostics and timeout handling, but do not treat as a primary repeated-compaction oracle."
+    },
+    "019d6961-5785-7520-903b-e4567b6e96a0": {
+      "classification": "acceptance_oracle",
+      "notes": "Structurally normal copied source thread used for repeated-compaction and parity acceptance."
+    }
+  },
+  "cases": [
+    {
+      "id": "s5980_remote_only_execution",
+      "source_thread_id": "019d5980-4f20-7861-9083-e3527d20a3d2",
+      "category": "forbidden_action",
+      "priority": "critical",
+      "evidence_summary": "The user required all later experiments to run on the remote 5090 server rather than on the local machine.",
+      "evidence_timestamps": [
+        "2026-04-05T05:50:05.652Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "You are resuming this project. Which execution location should you use for the next real experiment run?",
+      "choices": {
+        "A": "Run quick local experiments on the current machine first to save time.",
+        "B": "Continue on the remote 5090 server and keep the project under the designated remote workspace.",
+        "C": "Switch to a new workstation and create a fresh experimental environment there."
+      },
+      "expected_choice": "B",
+      "hard_fail_choices": [
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "s5980_remote_workdir_binding",
+      "source_thread_id": "019d5980-4f20-7861-9083-e3527d20a3d2",
+      "category": "exact_binding",
+      "priority": "critical",
+      "evidence_summary": "The user specified the exact remote working directory for all subsequent experiments.",
+      "evidence_timestamps": [
+        "2026-04-05T05:50:05.652Z"
+      ],
+      "response_kind": "short_answer",
+      "probe_question": "What exact remote working directory should the project use for the real experiments?",
+      "accepted_answers": [
+        "/root/shared-nvme/贴图生成"
+      ],
+      "abstain_score": 0.25,
+      "hard_fail_on_non_abstain": true
+    },
+    {
+      "id": "s5980_result_first_visual_acceptance",
+      "source_thread_id": "019d5980-4f20-7861-9083-e3527d20a3d2",
+      "category": "latent_constraint_application",
+      "priority": "critical",
+      "evidence_summary": "The user made visual result quality the top priority and required personally checking result images rather than optimizing only for throughput.",
+      "evidence_timestamps": [
+        "2026-04-05T05:57:34.493Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "Which acceptance rule should dominate the next experiment decision?",
+      "choices": {
+        "A": "Maximize GPU utilization and training speed even if output images are not inspected yet.",
+        "B": "Prioritize final visual effect quality and inspect result images before calling the run good enough.",
+        "C": "Keep the old implementation unchanged even if the output quality stays mediocre."
+      },
+      "expected_choice": "B",
+      "hard_fail_choices": [
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "s5980_innovation_points_locked",
+      "source_thread_id": "019d5980-4f20-7861-9083-e3527d20a3d2",
+      "category": "update_precedence",
+      "priority": "critical",
+      "evidence_summary": "The user required the two innovation points to remain the main body of the approach, while still allowing optimization and adjustment.",
+      "evidence_timestamps": [
+        "2026-04-05T05:57:34.493Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "Which change policy is aligned with the agreed direction for the innovation points?",
+      "choices": {
+        "A": "Replace both innovation points entirely if a simpler direction appears later.",
+        "B": "Keep the two innovation points as the main body and optimize or adjust them without discarding them.",
+        "C": "Ignore the innovation-point requirement and focus only on resolution or engineering convenience."
+      },
+      "expected_choice": "B",
+      "hard_fail_choices": [
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "s5980_dynamic_resolution_formal_capability",
+      "source_thread_id": "019d5980-4f20-7861-9083-e3527d20a3d2",
+      "category": "latent_constraint_application",
+      "priority": "critical",
+      "evidence_summary": "The user pointed out that productized use may need dynamic resolution, and the plan was updated to make dynamic resolution a formal capability rather than relying only on one fixed infer-size.",
+      "evidence_timestamps": [
+        "2026-04-05T17:33:50.811Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "If this path is productized after the current experiments, how should inference resolution be handled?",
+      "choices": {
+        "A": "Freeze one hand-tuned infer-size permanently and keep the product path fixed there.",
+        "B": "Support dynamic resolution input or auto sizing as a formal capability rather than relying only on a fixed hand-tuned value.",
+        "C": "Remove resolution handling from the product path because it does not matter anymore."
+      },
+      "expected_choice": "B",
+      "hard_fail_choices": [
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "s6961_benchmark_panel_scope_lock",
+      "source_thread_id": "019d6961-5785-7520-903b-e4567b6e96a0",
+      "category": "scope_lock",
+      "priority": "critical",
+      "evidence_summary": "The evaluation panel must include benchmark-level SOTA comparison; comparing only against a frame-sampling baseline is not sufficient.",
+      "evidence_timestamps": [
+        "2026-04-07T21:26:37.401Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "How should the evaluation panel be scoped for this project?",
+      "choices": {
+        "A": "Compare only against a frame-sampling baseline because benchmark SOTA is unnecessary.",
+        "B": "Treat benchmark SOTA comparison as a required part of the panel; a frame-sampling-only comparison is not enough.",
+        "C": "Use Qwen3-Omni as the only main reference and skip benchmark SOTA comparison."
+      },
+      "expected_choice": "B",
+      "hard_fail_choices": [
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "s6961_gpt54_proxy_binding",
+      "source_thread_id": "019d6961-5785-7520-903b-e4567b6e96a0",
+      "category": "exact_binding",
+      "priority": "critical",
+      "evidence_summary": "The user bound the closed-model evaluation spine to GPT-5.4 through the existing Codex config proxy and auth setup.",
+      "evidence_timestamps": [
+        "2026-04-07T21:32:44.192Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "Which closed model binding should remain the main evaluation/control spine?",
+      "choices": {
+        "A": "GPT-5.4 through the user's existing Codex proxy and auth configuration.",
+        "B": "Qwen3-Omni as the main closed-model substitute.",
+        "C": "An unspecified best-available model with no fixed binding."
+      },
+      "expected_choice": "A",
+      "hard_fail_choices": [
+        "B",
+        "C"
+      ]
+    },
+    {
+      "id": "s6961_qwen_optional_not_required",
+      "source_thread_id": "019d6961-5785-7520-903b-e4567b6e96a0",
+      "category": "update_precedence",
+      "priority": "medium",
+      "evidence_summary": "The user clarified that the Qwen3-Omni comparison is optional and can be skipped if benchmark SOTA comparisons already cover the need.",
+      "evidence_timestamps": [
+        "2026-04-07T21:32:44.192Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "How should the Qwen3-Omni comparator be treated in the current evaluation plan?",
+      "choices": {
+        "A": "It is mandatory and must be kept in every benchmark run.",
+        "B": "It is optional and can be skipped if benchmark SOTA comparison already covers the need.",
+        "C": "It should replace GPT-5.4 as the main evaluation model."
+      },
+      "expected_choice": "B",
+      "hard_fail_choices": [
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "s6961_full_video_not_frame_sampling",
+      "source_thread_id": "019d6961-5785-7520-903b-e4567b6e96a0",
+      "category": "latent_constraint_application",
+      "priority": "critical",
+      "evidence_summary": "The thread redefined the target as an external full-video understanding layer that improves overall content understanding while preserving continuity and details, not a prettier frame-sampling prompt path.",
+      "evidence_timestamps": [
+        "2026-04-07T21:05:43.607Z",
+        "2026-04-07T21:09:04.961Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "What kind of external layer is aligned with the actual phase-1 target in this thread?",
+      "choices": {
+        "A": "A layer that mainly improves frame-sampling prompts while still relying on lots of sampled images.",
+        "B": "A full-video external understanding layer that helps overall understanding while preserving continuity and details.",
+        "C": "A smaller open model that directly replaces the downstream closed model as the final judge."
+      },
+      "expected_choice": "B",
+      "hard_fail_choices": [
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "s6961_gpt54_mainline_not_qwen_drift",
+      "source_thread_id": "019d6961-5785-7520-903b-e4567b6e96a0",
+      "category": "update_precedence",
+      "priority": "critical",
+      "evidence_summary": "Later in the thread, the user rejected drift back to Qwen or benchmark-only prep; the formal phase-1 mainline stays on the GPT-5.4-centered evaluation/control spine.",
+      "evidence_timestamps": [
+        "2026-04-10T00:02:20.144Z",
+        "2026-04-10T17:25:08.132Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "If choosing the next formal phase-1 mainline effort, what should take precedence now?",
+      "choices": {
+        "A": "Return to the GPT-5.4-centered evaluation/control spine and repo-visible phase-1 plan rather than drifting back to Qwen or standalone benchmark prep.",
+        "B": "Recenter the mainline around Qwen3-Omni as a formal headline comparator.",
+        "C": "Pause the GPT-5.4 control spine and focus only on standalone benchmark preparation for now."
+      },
+      "expected_choice": "A",
+      "hard_fail_choices": [
+        "B",
+        "C"
+      ]
+    },
+    {
+      "id": "s4e04_non_macos_cpu_fallback",
+      "source_thread_id": "019d4e04-eaa2-7311-a0e2-ad430b478151",
+      "category": "exact_binding",
+      "priority": "critical",
+      "evidence_summary": "The user requested a compatibility layer where macOS can use MLX or MPS acceleration, while non-macOS Linux or Windows should use CPU inference fallback.",
+      "evidence_timestamps": [
+        "2026-04-02T14:01:05.330Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "What inference policy should apply on non-macOS Linux or Windows machines?",
+      "choices": {
+        "A": "Use CPU inference fallback by default outside macOS.",
+        "B": "Use MPS or MLX acceleration outside macOS.",
+        "C": "Require a CUDA-only path by default outside macOS."
+      },
+      "expected_choice": "A",
+      "hard_fail_choices": [
+        "B",
+        "C"
+      ]
+    },
+    {
+      "id": "s4e04_real_assets_before_benchmark",
+      "source_thread_id": "019d4e04-eaa2-7311-a0e2-ad430b478151",
+      "category": "forbidden_action",
+      "priority": "critical",
+      "evidence_summary": "The user explicitly rejected fake testing and required downloading the actual LLM and benchmark assets before continuing.",
+      "evidence_timestamps": [
+        "2026-04-02T14:11:33.993Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "If the real models and benchmark assets have not been downloaded yet, what should you do next?",
+      "choices": {
+        "A": "Continue with mocked or synthetic tests for now and fill in the real assets later.",
+        "B": "Download the real LLM and benchmark assets first, then continue the benchmark or algorithm work.",
+        "C": "Skip asset downloads because the design documents already justify the approach."
+      },
+      "expected_choice": "B",
+      "hard_fail_choices": [
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "s4e04_hf_mirror_policy",
+      "source_thread_id": "019d4e04-eaa2-7311-a0e2-ad430b478151",
+      "category": "exact_binding",
+      "priority": "medium",
+      "evidence_summary": "The user updated the download policy so Hugging Face downloads should go through an HF mirror.",
+      "evidence_timestamps": [
+        "2026-04-02T14:16:37.974Z"
+      ],
+      "response_kind": "short_answer",
+      "probe_question": "What download policy should be used for Hugging Face assets in this project?",
+      "accepted_answers": [
+        "hf mirror",
+        "use hf mirror",
+        "hugging face mirror",
+        "huggingface mirror",
+        "hf-mirror.com",
+        "mirror-first hugging face",
+        "mirror first hugging face"
+      ],
+      "abstain_score": 0.25,
+      "hard_fail_on_non_abstain": false
+    },
+    {
+      "id": "s4e04_server_first_with_local_exception",
+      "source_thread_id": "019d4e04-eaa2-7311-a0e2-ad430b478151",
+      "category": "latent_constraint_application",
+      "priority": "critical",
+      "evidence_summary": "A later server-first update made the server or 5090 path the default for further validation and reruns, while still allowing local-only edit, format, or render loops, or a specific experiment when local is materially faster and low risk.",
+      "evidence_timestamps": [
+        "2026-04-04T17:20:47.378Z",
+        "2026-04-05T03:25:44.604Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "After the later server-first update, when is local execution still acceptable?",
+      "choices": {
+        "A": "Keep server-first as the default for further validation and reruns, but allow local-only edit, format, or render loops, or a specific experiment when local is materially faster and low risk.",
+        "B": "Use local execution as the default for the remaining validation because it is more convenient than the server.",
+        "C": "Ban all local work completely, including tiny edit, format, or render loops that are clearly faster locally."
+      },
+      "expected_choice": "A",
+      "hard_fail_choices": [
+        "B"
+      ]
+    },
+    {
+      "id": "s4e04_technical_dossier_over_interview_narrative",
+      "source_thread_id": "019d4e04-eaa2-7311-a0e2-ad430b478151",
+      "category": "update_precedence",
+      "priority": "critical",
+      "evidence_summary": "The hard acceptance target later switched away from a quick interview-ready finish and toward a large detailed technical dossier with architecture, algorithms, figures, formulas, tables, and measured evidence.",
+      "evidence_timestamps": [
+        "2026-04-04T17:17:18.463Z",
+        "2026-04-05T03:25:44.604Z"
+      ],
+      "response_kind": "single_choice",
+      "probe_question": "After the later acceptance-target switch, what final deliverable should dominate?",
+      "choices": {
+        "A": "A detailed technical document or dossier with architecture, algorithms, figures, formulas, tables, and measured benchmark evidence.",
+        "B": "A short interview-ready narrative that prioritizes story over technical depth.",
+        "C": "Further benchmark escalation first, while postponing packaging the existing evidence into a technical dossier indefinitely."
+      },
+      "expected_choice": "A",
+      "hard_fail_choices": [
+        "B",
+        "C"
+      ]
+    }
+  ]
+}

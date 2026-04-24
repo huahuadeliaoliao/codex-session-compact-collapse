@@ -8,8 +8,10 @@ use crate::command_canonicalization::canonicalize_command_for_approval;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::GuardianNetworkAccessTrigger;
 use crate::guardian::review_approval_request;
 use crate::sandboxing::ExecOptions;
+use crate::sandboxing::ExecServerEnvConfig;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::ShellType;
 use crate::tools::network_approval::NetworkApprovalMode;
@@ -20,6 +22,7 @@ use crate::tools::runtimes::shell::zsh_fork_backend;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
+use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::SandboxOverride;
 use crate::tools::sandboxing::Sandboxable;
@@ -49,9 +52,11 @@ use std::collections::HashMap;
 #[derive(Clone, Debug)]
 pub struct UnifiedExecRequest {
     pub command: Vec<String>,
+    pub hook_command: String,
     pub process_id: i32,
     pub cwd: AbsolutePathBuf,
     pub env: HashMap<String, String>,
+    pub exec_server_env_config: Option<ExecServerEnvConfig>,
     pub explicit_env_overrides: HashMap<String, String>,
     pub network: Option<NetworkProxy>,
     pub tty: bool,
@@ -124,7 +129,7 @@ impl Approvable<UnifiedExecRequest> for UnifiedExecRuntime<'_> {
         let turn = ctx.turn;
         let call_id = ctx.call_id.to_string();
         let command = req.command.clone();
-        let cwd = req.cwd.to_path_buf();
+        let cwd = req.cwd.clone();
         let retry_reason = ctx.retry_reason.clone();
         let reason = retry_reason.clone().or_else(|| req.justification.clone());
         let guardian_review_id = ctx.guardian_review_id.clone();
@@ -137,7 +142,7 @@ impl Approvable<UnifiedExecRequest> for UnifiedExecRuntime<'_> {
                     GuardianApprovalRequest::ExecCommand {
                         id: call_id,
                         command,
-                        cwd,
+                        cwd: cwd.clone(),
                         sandbox_permissions: req.sandbox_permissions,
                         additional_permissions: req.additional_permissions.clone(),
                         justification: req.justification.clone(),
@@ -155,7 +160,7 @@ impl Approvable<UnifiedExecRequest> for UnifiedExecRuntime<'_> {
                         call_id,
                         /*approval_id*/ None,
                         command,
-                        cwd,
+                        cwd.clone(),
                         reason,
                         ctx.network_approval_context.clone(),
                         req.exec_approval_requirement
@@ -177,6 +182,16 @@ impl Approvable<UnifiedExecRequest> for UnifiedExecRuntime<'_> {
         Some(req.exec_approval_requirement.clone())
     }
 
+    fn permission_request_payload(
+        &self,
+        req: &UnifiedExecRequest,
+    ) -> Option<PermissionRequestPayload> {
+        Some(PermissionRequestPayload::bash(
+            req.hook_command.clone(),
+            req.justification.clone(),
+        ))
+    }
+
     fn sandbox_mode_for_first_attempt(&self, req: &UnifiedExecRequest) -> SandboxOverride {
         sandbox_override_for_first_attempt(req.sandbox_permissions, &req.exec_approval_requirement)
     }
@@ -186,12 +201,23 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
     fn network_approval_spec(
         &self,
         req: &UnifiedExecRequest,
-        _ctx: &ToolCtx,
+        ctx: &ToolCtx,
     ) -> Option<NetworkApprovalSpec> {
         req.network.as_ref()?;
         Some(NetworkApprovalSpec {
             network: req.network.clone(),
             mode: NetworkApprovalMode::Deferred,
+            trigger: GuardianNetworkAccessTrigger {
+                call_id: ctx.call_id.clone(),
+                tool_name: ctx.tool_name.clone(),
+                command: req.command.clone(),
+                cwd: req.cwd.clone(),
+                sandbox_permissions: req.sandbox_permissions,
+                additional_permissions: req.additional_permissions.clone(),
+                justification: req.justification.clone(),
+                tty: Some(req.tty),
+            },
+            command: req.hook_command.clone(),
         })
     }
 
@@ -237,9 +263,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                 expiration: ExecExpiration::DefaultTimeout,
                 capture_policy: ExecCapturePolicy::ShellTool,
             };
-            let exec_env = attempt
+            let mut exec_env = attempt
                 .env_for(command, options, req.network.as_ref())
                 .map_err(|err| ToolError::Codex(err.into()))?;
+            exec_env.exec_server_env_config = req.exec_server_env_config.clone();
             match zsh_fork_backend::maybe_prepare_unified_exec(
                 req,
                 attempt,
@@ -294,9 +321,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             expiration: ExecExpiration::DefaultTimeout,
             capture_policy: ExecCapturePolicy::ShellTool,
         };
-        let exec_env = attempt
+        let mut exec_env = attempt
             .env_for(command, options, req.network.as_ref())
             .map_err(|err| ToolError::Codex(err.into()))?;
+        exec_env.exec_server_env_config = req.exec_server_env_config.clone();
         let Some(environment) = ctx.turn.environment.as_ref() else {
             return Err(ToolError::Rejected(
                 "exec_command is unavailable in this session".to_string(),

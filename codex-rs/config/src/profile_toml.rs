@@ -9,6 +9,7 @@ use crate::types::ApprovalsReviewer;
 use crate::types::Personality;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
+use codex_protocol::config_types::CompactStrategy;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::ServiceTier;
@@ -23,6 +24,7 @@ use codex_protocol::protocol::AskForApproval;
 #[schemars(deny_unknown_fields)]
 pub struct ConfigProfile {
     pub model: Option<String>,
+    /// Optional explicit service tier preference for new turns (`fast` or `flex`).
     pub service_tier: Option<ServiceTier>,
     /// The key in the `model_providers` map identifying the
     /// [`ModelProviderInfo`] to use.
@@ -40,6 +42,7 @@ pub struct ConfigProfile {
     pub chatgpt_base_url: Option<String>,
     /// Optional path to a file containing model instructions.
     pub model_instructions_file: Option<AbsolutePathBuf>,
+    pub compact_strategy: Option<CompactStrategy>,
     pub js_repl_node_path: Option<AbsolutePathBuf>,
     /// Ordered list of directories to search for Node modules in `js_repl`.
     pub js_repl_node_module_dirs: Option<Vec<AbsolutePathBuf>>,

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::SessionTask;
 use super::SessionTaskContext;
-use crate::codex::TurnContext;
+use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
@@ -27,23 +27,34 @@ impl SessionTask for CompactTask {
         _cancellation_token: CancellationToken,
     ) -> Option<String> {
         let session = session.clone_session();
-        let _ = if crate::compact::should_use_remote_compact_task(
-            ctx.as_ref(),
-            crate::compact::InitialContextInjection::DoNotInject,
+        let _ = match crate::compact_session::select_compact_route(
+            ctx.compact_strategy,
+            ctx.provider.info(),
         ) {
-            let _ = session.services.session_telemetry.counter(
-                "codex.task.compact",
-                /*inc*/ 1,
-                &[("type", "remote")],
-            );
-            crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
-        } else {
-            let _ = session.services.session_telemetry.counter(
-                "codex.task.compact",
-                /*inc*/ 1,
-                &[("type", "local")],
-            );
-            crate::compact::run_compact_task(session.clone(), ctx, input).await
+            crate::compact_session::CompactRoute::Session => {
+                session.services.session_telemetry.counter(
+                    "codex.task.compact",
+                    /*inc*/ 1,
+                    &[("type", "session")],
+                );
+                crate::compact_session::run_session_compact_task(session.clone(), ctx, input).await
+            }
+            crate::compact_session::CompactRoute::Remote => {
+                session.services.session_telemetry.counter(
+                    "codex.task.compact",
+                    /*inc*/ 1,
+                    &[("type", "remote")],
+                );
+                crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
+            }
+            crate::compact_session::CompactRoute::Local => {
+                session.services.session_telemetry.counter(
+                    "codex.task.compact",
+                    /*inc*/ 1,
+                    &[("type", "local")],
+                );
+                crate::compact::run_compact_task(session.clone(), ctx, input).await
+            }
         };
         None
     }

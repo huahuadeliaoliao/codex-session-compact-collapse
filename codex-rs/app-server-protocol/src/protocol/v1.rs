@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use codex_git_utils::GitSha;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::CompactMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
@@ -12,6 +10,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::FileChange;
+pub use codex_protocol::protocol::GitSha;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
@@ -202,8 +201,6 @@ pub struct UserSavedConfig {
     pub forced_chatgpt_workspace_id: Option<String>,
     pub forced_login_method: Option<ForcedLoginMethod>,
     pub model: Option<String>,
-    pub compact_mode: Option<CompactMode>,
-    pub compact_preserve_turns: Option<u32>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,

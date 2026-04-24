@@ -3,27 +3,35 @@
 This repository is derived from the open-source
 [`openai/codex`](https://github.com/openai/codex) project.
 
-## Scope of This Public Snapshot
+## Source Lineage
 
-This first public release is intentionally limited to the source changes needed
-to inspect, build, and review the compaction implementation itself.
+- Upstream base: OpenAI Codex `rust-v0.124.0`
+- Published focus: an additive `compact_strategy = "session"` route for
+  session-level compact-collapse
+- Repository status: independent experimental source release, not an official
+  OpenAI distribution
+
+## Scope of This Public Snapshot
 
 Included:
 
-- Codex source changes related to the additive `collapse` compaction mode
-- configuration and protocol plumbing for enabling the mode
-- unit and integration tests that belong to the source tree
-- general build and usage documentation already suitable for public release
+- Codex source changes for the opt-in session compact route
+- configuration and protocol plumbing for `compact_strategy`
+- prompt contract and bounded frontier logic for durable session state
+- source-tree tests covering route selection, remote bypass, replay behavior,
+  and image sidecar boundaries
+- docs and a small benchmark harness manifest suitable for public review
 
-Omitted for now:
+Omitted:
 
-- benchmark corpora derived from real long sessions
-- copied session rollouts and isolated lab homes
+- private copied-session rollouts
 - local benchmark result JSON files
+- isolated lab homes
 - private execution journals and environment manifests
 
 ## Positioning
 
-This repository is not an official OpenAI release. It is a derived,
-independently published source snapshot intended to make the implementation
-itself reviewable before the evaluation assets are sanitized for public release.
+The implementation is designed to keep default Codex behavior unchanged unless
+the session compact strategy is enabled. It is intended as a reviewable source
+snapshot for the compact-collapse experiment rather than a packaged end-user
+release.
